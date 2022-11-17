@@ -1,0 +1,174 @@
+# Advanced selection for FreeCAD
+# Provide various methods to select edges or faces
+
+import Part
+from PySide2 import QtCore, QtWidgets
+from FreeCAD import Console, Gui
+
+__version__ = '1.0.0'
+__author__ = 'clsergent'
+__licence__ = 'EUPL1.2'
+
+
+def comboViewTab() -> QtWidgets.QTabWidget | None:
+    """return the Combo view tab"""
+    try:
+        return Gui.getMainWindow().findChild(QtWidgets.QDockWidget, 'Combo View').findChild(QtWidgets.QTabWidget, 'combiTab')
+    except AttributeError:
+        return None
+
+
+class SelectionDialog(QtWidgets.QWidget):
+    METHODS = (
+        ('edges_cumulate', 'Accumulate selected edges'),
+        ('edges_all', 'Select all edges from part'),
+
+        ('faces_cumulate', 'Accumulate selected faces'),
+        ('faces_all', 'Select all faces from part'),
+        ('faces_nvertical', 'Select non vertical faces'),
+        ('faces_above', 'Select faces above selected face'),
+        ('faces_below', 'Select faces below selected face'),
+    )
+
+    def __init__(self):
+        QtWidgets.QWidget.__init__(self, comboViewTab())
+        self._selection = set()  # used for accumulation
+
+        # Build interface
+        self.setWindowTitle('Selection')
+        self.setLayout(QtWidgets.QVBoxLayout())
+
+        self.stateButton = QtWidgets.QCheckBox(self)
+        self.stateButton.setText('Activate')
+        self.stateButton.stateChanged.connect(self.setState)
+        self.layout().addWidget(self.stateButton, alignment=QtCore.Qt.AlignCenter)
+
+        self.line = QtWidgets.QFrame()
+        self.line.setFrameShape(QtWidgets.QFrame.HLine)
+        self.line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.layout().addWidget(self.line)
+
+        self.edgesBox = QtWidgets.QGroupBox('Edges selection', self)
+        self.layout().addWidget(self.edgesBox)
+        self.edgesBox.setLayout(QtWidgets.QVBoxLayout())
+
+        self.facesBox = QtWidgets.QGroupBox('Faces selection', self)
+        self.layout().addWidget(self.facesBox)
+        self.facesBox.setLayout(QtWidgets.QVBoxLayout())
+
+        self.methodsGroup = QtWidgets.QButtonGroup()
+        self.methodsGroup.buttonToggled.connect(self.setMethod)
+
+        for i, (name, text) in enumerate(self.METHODS):
+            self.methodsGroup.addButton(QtWidgets.QRadioButton(text), i)
+            self.methodsGroup.button(i).setObjectName(name)
+            if name.startswith('edges'):
+                self.edgesBox.layout().addWidget(self.methodsGroup.button(i))
+            elif name.startswith('faces'):
+                self.facesBox.layout().addWidget(self.methodsGroup.button(i))
+
+        self.actionButtons = QtWidgets.QDialogButtonBox(self)
+        self.actionButtons.clicked.connect(self.action)
+        self.layout().addWidget(self.actionButtons, alignment=QtCore.Qt.AlignRight)
+        self.layout().addStretch()
+
+        self.parent().addTab(self, self.windowTitle())
+
+    def setState(self, enable=True):
+        """enable or disable the widget"""
+        self.facesBox.setEnabled(enable)
+        self.edgesBox.setEnabled(enable)
+        self.actionButtons.setEnabled(enable)
+
+        if enable:
+            Gui.Selection.addObserver(self)
+            if button := self.methodsGroup.checkedButton():
+                self.setMethod(button, True)
+            if Gui.Selection.getSelection():
+                self.actionButtons.show()
+        else:
+            Gui.Selection.removeObserver(self)
+            self._selection.clear()
+            self.actionButtons.hide()
+            Gui.Selection.removeSelectionGate()
+
+    @property
+    def method(self) -> str:
+        try:
+            return self.methodsGroup.checkedButton().objectName()
+        except AttributeError:
+            return ''
+
+    def setMethod(self, button: QtWidgets.QPushButton, checked: bool):
+        self.actionButtons.clear()
+        self.actionButtons.show()
+        if self.method.startswith('edges'):
+            Gui.Selection.addSelectionGate('SELECT Part::Feature SUBELEMENT Edge')
+        elif self.method.startswith('faces'):
+            Gui.Selection.addSelectionGate('SELECT Part::Feature SUBELEMENT Face')
+        else:
+            return
+        if checked is True:
+            if button.objectName() == 'faces_cumulate':
+                self.actionButtons.setStandardButtons(QtWidgets.QDialogButtonBox.Reset)
+            else:
+                self.actionButtons.setStandardButtons(QtWidgets.QDialogButtonBox.Apply | QtWidgets.QDialogButtonBox.Reset)
+
+    def addSelection(self, doc, obj, sub, pnt):               # Selection object
+        self.actionButtons.show()
+        if self.method.endswith('cumulate'):
+            for sel in self._selection:
+                Gui.Selection.addSelection(*sel)
+            self._selection.add((doc, obj, sub))
+        # Console.PrintMessage(f'addSelection:\n{doc}\n\t{obj}\n\t{sub}\n\t{pnt}')
+
+    def clearSelection(self, doc):
+        if self.method.endswith('cumulate') is False:
+            self._selection.clear()
+        self.actionButtons.hide()
+
+    def action(self, button: QtWidgets.QPushButton):
+        if self.actionButtons.buttonRole(button) == QtWidgets.QDialogButtonBox.ButtonRole.ResetRole:
+            self._selection.clear()
+            Gui.Selection.clearSelection()
+        elif self.actionButtons.buttonRole(button) == QtWidgets.QDialogButtonBox.ButtonRole.ApplyRole:
+            try:
+                obj = Gui.Selection.getSelection()[0]
+                sub = Gui.Selection.getSelectionEx()[0].SubObjects[0]
+            except IndexError:
+                Console.PrintError('Invalid Selection')
+            else:
+                if type(sub) is Part.Face:
+                    self.selectFaces(obj, sub)
+                elif type(sub) is Part.Edge:
+                    self.selectEdges(obj, sub)
+        else:
+            Console.PrintWarning(f'Unhandled action button clicked ({button})')
+
+    def selectFaces(self, obj, sub):
+        try:
+            if self.method == 'faces_all':
+                faces = [f'Face{i + 1}' for i, face in enumerate(obj.Shape.Faces)]
+            elif self.method == 'faces_nvertical':
+                faces = [f'Face{i + 1}' for i, face in enumerate(obj.Shape.Faces) if face.Surface.normal(0, 0)[2] != 0]
+            elif self.method == 'faces_above':
+                faces = [f'Face{i + 1}' for i, face in enumerate(obj.Shape.Faces) if
+                         face.BoundBox.ZMin >= sub.BoundBox.ZMin]
+            elif self.method == 'faces_below':
+                faces = [f'Face{i + 1}' for i, face in enumerate(obj.Shape.Faces) if
+                         face.BoundBox.ZMax <= sub.BoundBox.ZMax]
+            else:
+                faces = ()
+            Gui.Selection.addSelection(obj, faces)
+        except IndexError:
+            pass
+
+    def selectEdges(self, obj, sub: Part.Edge):
+        if self.method == 'edges_all':
+            edges = [f'Edge{i + 1}' for i, edge in enumerate(obj.Shape.Edges)]
+
+
+comboViewTab().removeTab(2)
+dialog = SelectionDialog()
+dialog.show()
+dialog.setState(False)
