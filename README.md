@@ -3,6 +3,7 @@
 ## Overview
 This repository list macros used to enhance [FreeCAD](https://www.freecad.org) experience:
 - [AdvancedSelection](https://github.com/clsergent/FreeCADMacros/blob/master/AdvancedSelection.FCMacro): adds various selection options
+- [SpreadsheetAlias](https://github.com/clsergent/FreeCADMacros/blob/master/SpreadsheetAlias.FCMacro): adds alias to any spreadsheet
 
 ## Usage
 Refer to [FreeCAD documentation](https://wiki.freecadweb.org/Macros) on how to use macros.

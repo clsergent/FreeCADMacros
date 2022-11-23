@@ -1,0 +1,179 @@
+import math
+import re
+import xml.etree.cElementTree as tree
+
+import FreeCAD
+import FreeCADGui
+from PySide2 import QtWidgets, QtGui, QtCore
+
+
+NAMES_COLUMN = 1
+ALIAS_COLUMN = 2
+
+ALIAS_SEPARATOR = '_'
+
+VARIABLE_RE = re.compile('^[a-zA-Z_][a-zA-Z0-9_]*$')
+COLUMN_RE = re.compile('^[A-Z]+$')
+CELL_RE = re.compile('^([A-Z]+)([0-9]+)$')
+
+
+class Cells(list):
+    """Allow to explore cells content (caution: never updated)"""
+    # TODO: use getUsedCells() when this function will be exposed from C++
+    def __init__(self, sheet):
+        self._sheet = sheet
+
+        cells = tree.fromstring(sheet.cells.Content)
+        if cells.tag != 'Cells':
+            raise ValueError('cells argument is invalid')
+        else:
+            list.__init__(self, [cell.get('address') for cell in cells if cell.tag == 'Cell'])
+
+    def topRow(self) -> int:
+        """return the greatest row index"""
+        try:
+            return max([int(group.group(2)) for cell in self if (group := CELL_RE.match(cell))])
+        except ValueError:
+            return -1
+
+    def aliasCell(self, alias) -> str | None:
+        """return the cell linked to the given alias"""
+        for cell in self:
+            if self._sheet.getAlias(cell) == alias:
+                return cell
+        return None
+
+
+def intToStrColumn(index: int) -> str:
+    """convert cell index to its name"""
+    if index > 0:
+        return ''.join([chr(int((index / 26 ** i) % 26) + 64) for i in range(int(math.log(index, 26)), -1, -1)])
+    else:
+        raise ValueError('invalid column index')
+
+
+def strToIntColumn(name: str) -> int:
+    """convert column name to its index"""
+    if COLUMN_RE.match(name):
+        return sum([(ord(c) - 64) * 26 ** i for i, c in enumerate(name)])
+    else:
+        raise ValueError('invalid column name provided')
+
+
+def intToStrCell(row: int, col: int | str) -> str:
+    return f'{intToStrColumn(col)}{row}'
+
+
+class VariableValidator(QtGui.QValidator):
+    """Validate python variable"""
+    def validate(self, text: str, integer: int) -> QtGui.QValidator.State:
+        if VARIABLE_RE.match('_' + text):
+            return QtGui.QValidator.Acceptable
+        else:
+            return QtGui.QValidator.Invalid
+
+
+class ColumnSpinBox(QtWidgets.QSpinBox):
+    """Spin box handling column name"""
+    def __init__(self, *args, default: int, **kwargs):
+        QtWidgets.QSpinBox.__init__(self, *args, **kwargs)
+        self.setMinimum(1)
+        self.setValue(default)
+
+    def validate(self, input_: str, pos: int) -> QtGui.QValidator.State:
+        if COLUMN_RE.match(input_):
+            return QtGui.QValidator.Acceptable
+        else:
+            return QtGui.QValidator.Invalid
+
+    def textFromValue(self, val: int):
+        return intToStrColumn(val)
+
+    def valueFromText(self, text: str):
+        return strToIntColumn(text)
+
+
+class Dialog(QtWidgets.QDialog):
+    def __init__(self):
+        QtWidgets.QDialog.__init__(self)
+        # FreeCAD
+        self._sheet = FreeCADGui.ActiveDocument.ActiveView.getSheet()
+
+        # GUI
+        self.setWindowTitle('Spreadsheet selection')
+
+        self.setLayout(QtWidgets.QGridLayout())
+
+        self.labels = list()
+        for i, label in enumerate(('Names Column', 'Alias Column', 'Alias Separator', 'Overwrite existing aliases')):
+            self.labels.append(QtWidgets.QLabel(label))
+            self.layout().addWidget(self.labels[-1], i, 0)
+
+        self.namesSpin = ColumnSpinBox(default=NAMES_COLUMN)
+        self.layout().addWidget(self.namesSpin, 0, 1)
+
+        self.aliasSpin = ColumnSpinBox(default=ALIAS_COLUMN)
+        self.layout().addWidget(self.aliasSpin, 1, 1)
+
+        self.separatorText = QtWidgets.QLineEdit(ALIAS_SEPARATOR)
+        self.separatorText.setValidator(VariableValidator())
+        self.layout().addWidget(self.separatorText, 2, 1)
+
+        self.overwriteButton = QtWidgets.QCheckBox()
+        self.layout().addWidget(self.overwriteButton, 3, 1)
+
+        self.actionButtons = QtWidgets.QDialogButtonBox()
+        self.actionButtons.setStandardButtons(QtWidgets.QDialogButtonBox.Cancel |
+                                              QtWidgets.QDialogButtonBox.Ok |
+                                              QtWidgets.QDialogButtonBox.Reset)
+        self.actionButtons.clicked.connect(self.action)
+        self.layout().addWidget(self.actionButtons, 4, 0, 1, 2, alignment=QtCore.Qt.AlignRight)
+
+    def open(self):
+        if str(FreeCADGui.ActiveDocument.ActiveView) == 'SheetView':
+            QtWidgets.QDialog.open(self)
+        else:
+            QtWidgets.QMessageBox.warning(None, "Error", 'Open a spreadsheed to use this macro')
+
+    def action(self, button: QtWidgets.QPushButton):
+        if self.actionButtons.buttonRole(button) == QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole:
+            self.setAliases()
+            self.close()
+        elif self.actionButtons.buttonRole(button) == QtWidgets.QDialogButtonBox.ButtonRole.ResetRole:
+            self.clearAliases()
+            self._sheet.recompute()
+        else:
+            self.close()
+
+    def clearAliases(self):
+        for cell in Cells(self._sheet):
+            self._sheet.setAlias(cell, None)
+
+    def setAliases(self):
+        group = ''
+        cells = Cells(self._sheet)
+        for row in range(1, cells.topRow() + 1):
+            nameCell = intToStrCell(row, self.namesSpin.value())
+            aliasCell = intToStrCell(row, self.aliasSpin.value())
+            if VARIABLE_RE.match(name := self._sheet.getContents(nameCell)):
+                if (style := self._sheet.getStyle(nameCell)) and 'bold' in style:
+                    group = name + self.separatorText.text()
+                else:
+                    try:
+                        alias = f'{group}{name}'
+                        self._sheet.setAlias(aliasCell, alias)
+                    except ValueError:
+                        if self.overwriteButton.isChecked():
+                            self._sheet.setAlias(cells.aliasCell(alias), None)
+                            self._sheet.setAlias(aliasCell, alias)
+                        else:
+                            FreeCAD.Console.PrintWarning(f'{nameCell}: alias "{alias}" already defined, skipping')
+            elif name:
+                FreeCAD.Console.PrintWarning(f'{nameCell}: cell name "{name}" is not a valid python variable, skipping')
+            else:
+                group = ''
+
+        self.close()
+
+
+Dialog().exec_()
