@@ -155,7 +155,12 @@ class Dialog(QtWidgets.QDialog):
         for row in range(1, cells.topRow() + 1):
             nameCell = intToStrCell(row, self.namesSpin.value())
             aliasCell = intToStrCell(row, self.aliasSpin.value())
-            if VARIABLE_RE.match(name := self._sheet.getContents(nameCell)):
+
+            name = self._sheet.getContents(nameCell)
+            if len(name) > 1 and name[0] == "'":
+                name = name[1:]
+
+            if VARIABLE_RE.match(name):
                 if (style := self._sheet.getStyle(nameCell)) and 'bold' in style:
                     group = name + self.separatorText.text()
                 else:
