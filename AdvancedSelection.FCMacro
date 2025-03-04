@@ -10,15 +10,8 @@ __author__ = 'clsergent'
 __licence__ = 'EUPL1.2'
 
 
-def comboViewTab() -> QtWidgets.QTabWidget | None:
-    """return the Combo view tab"""
-    try:
-        return Gui.getMainWindow().findChild(QtWidgets.QDockWidget, 'Combo View').findChild(QtWidgets.QTabWidget, 'combiTab')
-    except AttributeError:
-        return None
-
-
 class SelectionDialog(QtWidgets.QWidget):
+    name = 'Custom Selection'    
     METHODS = (
         ('edges_cumulate', 'Accumulate selected edges'),
         ('edges_all', 'Select all edges from part'),
@@ -29,9 +22,18 @@ class SelectionDialog(QtWidgets.QWidget):
         ('faces_above', 'Select faces above selected face'),
         ('faces_below', 'Select faces below selected face'),
     )
-
+    
+    def __new__(cls):
+        for obj in Gui.getMainWindow().findChildren(QtWidgets.QWidget, cls.name):
+            obj.deleteLater()
+            del obj
+        return super().__new__(cls)
+    
     def __init__(self):
-        QtWidgets.QWidget.__init__(self, comboViewTab())
+        self.parent = QtWidgets.QDockWidget(self.name, Gui.getMainWindow())
+        self.parent.setObjectName(self.name)
+
+        QtWidgets.QWidget.__init__(self, self.parent)
         self._selection = set()  # used for accumulation
 
         # Build interface
@@ -71,8 +73,11 @@ class SelectionDialog(QtWidgets.QWidget):
         self.actionButtons.clicked.connect(self.action)
         self.layout().addWidget(self.actionButtons, alignment=QtCore.Qt.AlignRight)
         self.layout().addStretch()
-
-        self.parent().addTab(self, self.windowTitle())
+        
+        self.parent.setWidget(self)
+        Gui.getMainWindow().addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.parent)
+        self.parent.show()
+        self.show()
 
     def setState(self, enable=True):
         """enable or disable the widget"""
@@ -168,7 +173,6 @@ class SelectionDialog(QtWidgets.QWidget):
             edges = [f'Edge{i + 1}' for i, edge in enumerate(obj.Shape.Edges)]
 
 
-comboViewTab().removeTab(2)
+
 dialog = SelectionDialog()
-dialog.show()
 dialog.setState(False)
